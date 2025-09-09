@@ -1,0 +1,126 @@
+name: Q Code Transformation
+
+on:
+  push:
+    branches:
+      - 'Q-TRANSFORM-issue-*'
+  issues:
+    types: [labeled]
+  pull_request:
+    types: [opened, synchronize]
+
+env:
+  MAVEN_CLI_OPTS: "-B -q --no-transfer-progress"
+
+jobs:
+  q-code-transformation:
+    runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'push' && startsWith(github.ref_name, 'Q-TRANSFORM-issue-')) ||
+      (github.event_name == 'issues' && contains(github.event.label.name, 'Amazon Q transform agent')) ||
+      (github.event_name == 'pull_request')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          
+      - name: Cache Maven dependencies
+        if: hashFiles('**/pom.xml') != ''
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+            
+      - name: Cache Gradle dependencies
+        if: hashFiles('**/build.gradle*') != ''
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+            
+      - name: Build and verify with Maven
+        if: hashFiles('**/pom.xml') != ''
+        run: |
+          echo "Building and verifying Maven project..."
+          mvn ${{ env.MAVEN_CLI_OPTS }} clean verify
+          if [ $? -eq 0 ]; then
+            echo "Maven build and verification successful"
+          else
+            echo "Maven build/verification failed, continuing for transformation"
+            exit 1
+          fi
+          
+      - name: Copy Maven dependencies
+        if: hashFiles('**/pom.xml') != '' 
+        run: |
+          echo "Copying Maven dependencies..."
+          mvn ${{ env.MAVEN_CLI_OPTS }} dependency:copy-dependencies             -DoutputDirectory=dependencies             -Dmdep.useRepositoryLayout=true             -Dmdep.copyPom=true             -Dmdep.addParentPoms=true
+            
+      - name: Build with Gradle
+        if: hashFiles('**/build.gradle*') != ''
+        run: |
+          echo "Building Gradle project..."
+          chmod +x gradlew || echo "No gradlew found, using system gradle"
+          if [ -f "./gradlew" ]; then
+            ./gradlew build --no-daemon --continue
+          else
+            gradle build --no-daemon --continue
+          fi
+          if [ $? -eq 0 ]; then
+            echo "Gradle build successful"
+          else
+            echo "Gradle build failed, continuing for transformation"
+          fi
+          
+      - name: Create transformation summary
+        run: |
+          echo "Q Code Transformation build completed"
+          echo "Project structure analysis:"
+          find . -type f -name "*.java" | head -10
+          echo "Available build artifacts:"
+          find . -name "target" -o -name "build" -o -name "dependencies" -type d | head -10
+          echo "Dependency analysis:"
+          if [ -d "dependencies" ]; then
+            echo "Maven dependencies copied to: dependencies/"
+            ls -la dependencies/ | head -5
+          fi
+          if [ -d "build" ]; then
+            echo "Gradle build output available in: build/"
+          fi
+          
+      - name: Upload Q Code Transformation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: q-code-transformation-dependencies
+          path: |
+            dependencies/
+            target/
+            build/
+            **/*.jar
+            **/*.war
+            **/*.pom
+          if-no-files-found: ignore
+          
+      - name: Upload additional transformation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: q-code-transformation-source
+          path: |
+            src/
+            **/*.java
+            **/*.xml
+            **/*.gradle
+            **/*.properties
+          if-no-files-found: ignore
